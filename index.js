@@ -150,11 +150,14 @@ function settle() {
         ro.disconnect();
         mo.disconnect();
         events.forEach((ev) => chat.removeEventListener(ev, stop));
+        chat.removeEventListener('scroll', place);
         clearTimeout(timer);
         if (stopSettle === stop) stopSettle = null;
     };
-    const timer = setTimeout(stop, 2500);
+    const timer = setTimeout(stop, 3000);
     events.forEach((ev) => chat.addEventListener(ev, stop, { passive: true }));
+    // 입력창 높이가 바뀌면 SillyTavern이 그만큼 채팅을 밀어 올림. 사용자가 손대기 전이라면 제자리로 돌려놓음.
+    chat.addEventListener('scroll', place, { passive: true });
     stopSettle = stop;
     watch();
     mo.observe(chat, { childList: true });
@@ -400,7 +403,8 @@ jQuery(async () => {
         clearTimeout(revertTimer);
         const changed = await applyCurrent();
         // 미리 적용된 경우에도 새 테마의 글꼴이 늦게 들어올 수 있어 자리를 잡아 줌
-        if (!changed && preApplied) settle();
+        // 첫 화면은 세트가 안 바뀌어도 맨 위에 있도록 잡아 줌 (하단 바가 늦게 커지며 밀려 올라가는 것 방지).
+        if (!changed && (preApplied || !currentTarget())) settle();
         preApplied = false;
         render();
     };
