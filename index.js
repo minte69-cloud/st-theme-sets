@@ -403,8 +403,7 @@ jQuery(async () => {
         clearTimeout(revertTimer);
         const changed = await applyCurrent();
         // 미리 적용된 경우에도 새 테마의 글꼴이 늦게 들어올 수 있어 자리를 잡아 줌
-        // 첫 화면은 세트가 안 바뀌어도 맨 위에 있도록 잡아 줌 (하단 바가 늦게 커지며 밀려 올라가는 것 방지).
-        if (!changed && (preApplied || !currentTarget())) settle();
+        if (!changed && preApplied) settle();
         preApplied = false;
         render();
     };
