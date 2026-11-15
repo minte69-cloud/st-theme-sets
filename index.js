@@ -10,6 +10,7 @@ const defaults = () => ({
     defaultSetId: '',    // 지정 안 된 캐릭터에 쓸 세트 ('' = 아무것도 안 바꿈)
     charMap: {},         // 캐릭터 아바타 파일명 -> 세트 id
     groupMap: {},        // 그룹 id -> 세트 id
+    updatedAt: 0,        // 마지막으로 세트 설정을 고친 시각 (기기 간 덮어쓰기 방지용)
 });
 
 const ctx = () => SillyTavern.getContext();
@@ -24,7 +25,39 @@ function settings() {
     return s;
 }
 
-const save = () => ctx().saveSettingsDebounced();
+// 세트 설정을 고쳤을 때만 시각을 찍음 (정규식 켜고 끄기 같은 자동 저장은 제외)
+const save = ({ touch = false } = {}) => {
+    if (touch) settings().updatedAt = Date.now();
+    ctx().saveSettingsDebounced();
+};
+
+/* ---------- 다른 기기에서 바뀐 세트 따라잡기 ----------
+   SillyTavern은 설정 전체를 "마지막에 저장한 쪽"의 내용으로 통째로 덮어씀.
+   그래서 오래 열려 있던 탭(예: 폰)이 예전 내용을 저장하면 다른 기기에서 만든 세트가 사라짐.
+   탭이 다시 보일 때 서버 쪽 세트가 더 새것이면 그걸 받아 와서, 옛 내용으로 덮어쓰지 않게 함. */
+
+let lastSync = 0;
+
+async function syncFromServer() {
+    if (Date.now() - lastSync < 120000) return;
+    lastSync = Date.now();
+    try {
+        const res = await fetch('/api/settings/get', { method: 'POST', headers: ctx().getRequestHeaders(), body: '{}', cache: 'no-cache' });
+        if (!res.ok) return;
+        const data = await res.json();
+        const remote = JSON.parse(data.settings || '{}')?.extension_settings?.[MODULE];
+        const local = settings();
+        if (!remote || (remote.updatedAt || 0) <= (local.updatedAt || 0)) return;
+        for (const key of Object.keys(defaults())) {
+            if (remote[key] !== undefined) local[key] = remote[key];
+        }
+        console.debug(LOG, '다른 기기에서 바뀐 세트를 받아 옴');
+        render();
+        applyCurrent();
+    } catch (e) {
+        console.warn(LOG, '세트 동기화 실패', e);
+    }
+}
 const uid = () => 'set_' + Math.random().toString(36).slice(2, 10);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -330,7 +363,7 @@ function bind() {
         } else {
             return;
         }
-        save();
+        save({ touch: true });
         render();
         applyCurrent();
     });
@@ -362,7 +395,7 @@ function bind() {
         } else {
             return;
         }
-        save();
+        save({ touch: true });
         render();
     });
 }
@@ -418,8 +451,15 @@ jQuery(async () => {
         if (s.charMap[oldAvatar]) {
             s.charMap[newAvatar] = s.charMap[oldAvatar];
             delete s.charMap[oldAvatar];
-            save();
+            save({ touch: true });
         }
+    });
+
+    // 탭이 30초 넘게 가려졌다가 다시 보이면 서버의 세트가 더 새것인지 확인
+    let hiddenAt = 0;
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) { hiddenAt = Date.now(); return; }
+        if (hiddenAt && Date.now() - hiddenAt > 30000) syncFromServer();
     });
 
     // 설정 서랍을 열 때마다 테마·정규식 목록을 새로 읽음
