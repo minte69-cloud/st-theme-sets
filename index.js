@@ -96,9 +96,9 @@ let editingId = '';   // 설정 화면에서 지금 펼쳐 보는 세트
 
 async function applyCurrent({ rerender = true } = {}) {
     const s = settings();
-    if (!s.enabled || busy) return;
+    if (!s.enabled || busy) return false;
     const set = setFor(currentTarget());
-    if (!set) return;
+    if (!set) return false;
 
     const select = document.querySelector('#themes');
     const willTheme = !!set.theme && themeNames().includes(set.theme)
@@ -106,7 +106,7 @@ async function applyCurrent({ rerender = true } = {}) {
     const managed = new Set(s.sets.flatMap((x) => x.regex || []));
     const on = new Set(set.regex || []);
     const willRegex = globalRegex().some((r) => managed.has(r.id) && !!r.disabled !== !on.has(r.id));
-    if (!willTheme && !willRegex) return;
+    if (!willTheme && !willRegex) return false;
 
     busy = true;
     document.body.classList.add('tsets-switching');
@@ -128,6 +128,22 @@ async function applyCurrent({ rerender = true } = {}) {
         busy = false;
         requestAnimationFrame(() => document.body.classList.remove('tsets-switching'));
     }
+    return true;
+}
+
+// 테마가 바뀌면 글자 크기·여백이 달라져 채팅 길이가 변하고, 처음에 맞춰 둔 "맨 아래" 위치가 어긋남.
+// 채팅을 열면서 세트가 바뀐 경우에만 다시 맨 아래로 내려 줌. 그 사이 사용자가 직접 스크롤하면 그만둠.
+function settleAtBottom() {
+    const chat = document.getElementById('chat');
+    if (!chat) return;
+    let cancelled = false;
+    const cancel = () => { cancelled = true; };
+    const events = ['wheel', 'touchstart', 'keydown', 'mousedown'];
+    events.forEach((ev) => chat.addEventListener(ev, cancel, { passive: true, once: true }));
+    const go = () => { if (!cancelled) chat.scrollTop = chat.scrollHeight; };
+    go();
+    [150, 500, 1100, 2000].forEach((ms) => setTimeout(go, ms));
+    setTimeout(() => events.forEach((ev) => chat.removeEventListener(ev, cancel)), 2100);
 }
 
 /* ---------- 설정 화면 ---------- */
@@ -305,7 +321,7 @@ jQuery(async () => {
     settings();
     mountSettings();
 
-    const onChat = async () => { await applyCurrent(); render(); };
+    const onChat = async () => { if (await applyCurrent()) settleAtBottom(); render(); };
     c.eventSource.on(c.eventTypes.CHAT_CHANGED, onChat);
     c.eventSource.on(c.eventTypes.APP_READY, onChat);
 
