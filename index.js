@@ -127,10 +127,46 @@ async function applySet(set, { rerender }) {
     return true;
 }
 
+/* ---------- 스크롤 자리 잡기 ----------
+   SillyTavern은 테마를 적용할 때마다 채팅을 맨 아래로 내림. 그래서
+   - 첫 화면(채팅 없음)에서는 맨 위로 되돌려 놓고,
+   - 채팅에서는 그 뒤에 글꼴·이미지가 늦게 들어와 길이가 늘어나도 맨 아래에 붙어 있게 함.
+   타이머로 나중에 끌어내리는 게 아니라, 길이가 변하는 그 프레임에 바로 맞추므로 중간에 멈춘 모습이 보이지 않음.
+   사용자가 직접 스크롤하면 즉시 손을 뗌. */
+
+let stopSettle = null;
+
+function settle() {
+    const chat = document.getElementById('chat');
+    if (!chat) return;
+    stopSettle?.();
+    const toTop = !currentTarget();
+    const place = () => { chat.scrollTop = toTop ? 0 : chat.scrollHeight; };
+    const ro = new ResizeObserver(place);
+    const watch = () => { for (const el of chat.children) ro.observe(el); };
+    const mo = new MutationObserver(() => { watch(); place(); });
+    const events = ['wheel', 'touchstart', 'keydown', 'mousedown'];
+    const stop = () => {
+        ro.disconnect();
+        mo.disconnect();
+        events.forEach((ev) => chat.removeEventListener(ev, stop));
+        clearTimeout(timer);
+        if (stopSettle === stop) stopSettle = null;
+    };
+    const timer = setTimeout(stop, 2500);
+    events.forEach((ev) => chat.addEventListener(ev, stop, { passive: true }));
+    stopSettle = stop;
+    watch();
+    mo.observe(chat, { childList: true });
+    place();
+}
+
 // 채팅이 바뀐 뒤 확인하는 길 (안전망). 미리 적용이 됐다면 여기서는 할 일이 없음.
 async function applyCurrent() {
     if (!settings().enabled) return false;
-    return applySet(setFor(currentTarget()), { rerender: true });
+    const changed = await applySet(setFor(currentTarget()), { rerender: true });
+    if (changed) settle();
+    return changed;
 }
 
 /* ---------- 미리 적용: 캐릭터를 누르는 순간 ----------
@@ -138,6 +174,7 @@ async function applyCurrent() {
    스크롤 위치도 처음부터 맞음. 목록에서 캐릭터·그룹·최근 채팅을 누를 때 동작. */
 
 let revertTimer = null;
+let preApplied = false;   // 방금 누르는 순간에 미리 적용했는지
 
 function targetFromClick(el) {
     const c = ctx();
@@ -169,7 +206,7 @@ function onListClick(e) {
     if (!target) return;
     const set = setFor(target);
     if (!set) return;
-    applySet(set, { rerender: false });
+    applySet(set, { rerender: false }).then((changed) => { preApplied = changed; });
     // 눌렀는데 채팅이 안 열린 경우(취소 등)에는 지금 채팅에 맞는 세트로 되돌림
     clearTimeout(revertTimer);
     revertTimer = setTimeout(() => {
@@ -353,7 +390,20 @@ jQuery(async () => {
     settings();
     mountSettings();
 
-    const onChat = async () => { clearTimeout(revertTimer); await applyCurrent(); render(); };
+    // 페이지를 열자마자(첫 화면이 그려지기 전) 기본 세트로 맞춰 둠.
+    // 저장돼 있던 마지막 테마가 몇 초 보였다가 바뀌는 일을 줄임.
+    if (settings().enabled && themeNames().length && !currentTarget()) {
+        applySet(setFor(null), { rerender: false });
+    }
+
+    const onChat = async () => {
+        clearTimeout(revertTimer);
+        const changed = await applyCurrent();
+        // 미리 적용된 경우에도 새 테마의 글꼴이 늦게 들어올 수 있어 자리를 잡아 줌
+        if (!changed && preApplied) settle();
+        preApplied = false;
+        render();
+    };
     c.eventSource.on(c.eventTypes.CHAT_CHANGED, onChat);
     c.eventSource.on(c.eventTypes.APP_READY, onChat);
     // 캡처 단계에서 먼저 받아야 SillyTavern이 채팅을 그리기 전에 적용됨
