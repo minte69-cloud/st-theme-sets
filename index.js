@@ -94,56 +94,88 @@ function applyRegex(set) {
 let busy = false;
 let editingId = '';   // 설정 화면에서 지금 펼쳐 보는 세트
 
-async function applyCurrent({ rerender = true } = {}) {
+function needsChange(set) {
     const s = settings();
-    if (!s.enabled || busy) return false;
-    const set = setFor(currentTarget());
-    if (!set) return false;
-
     const select = document.querySelector('#themes');
-    const willTheme = !!set.theme && themeNames().includes(set.theme)
+    const theme = !!set.theme && themeNames().includes(set.theme)
         && (ctx().powerUserSettings?.theme !== set.theme || select?.value !== set.theme);
     const managed = new Set(s.sets.flatMap((x) => x.regex || []));
     const on = new Set(set.regex || []);
-    const willRegex = globalRegex().some((r) => managed.has(r.id) && !!r.disabled !== !on.has(r.id));
-    if (!willTheme && !willRegex) return false;
+    const regex = globalRegex().some((r) => managed.has(r.id) && !!r.disabled !== !on.has(r.id));
+    return { theme, regex };
+}
 
+// 세트를 바로 적용함. 기다리는 시간 없음.
+// rerender: 이미 그려진 채팅에 새 정규식을 먹이려면 채팅을 다시 그려야 함.
+async function applySet(set, { rerender }) {
+    if (!set || busy) return false;
+    const need = needsChange(set);
+    if (!need.theme && !need.regex) return false;
     busy = true;
-    document.body.classList.add('tsets-switching');
     try {
-        await new Promise((r) => setTimeout(r, 150));
-        const themeChanged = applyTheme(set.theme);
-        const regexChanged = applyRegex(set);
-        if (regexChanged) {
+        applyTheme(set.theme);
+        if (applyRegex(set)) {
             save();
-            // 이미 그려진 메시지에 새 정규식이 먹도록 채팅을 다시 그림
             if (rerender && ctx().getCurrentChatId?.()) await ctx().reloadCurrentChat();
         }
-        // 테마를 비동기로 불러오는 환경에서도 바뀐 뒤에 화면을 보여 주도록 잠깐 기다림
-        if (themeChanged) await new Promise((r) => setTimeout(r, 450));
         console.debug(LOG, '적용:', set.name);
     } catch (e) {
         console.error(LOG, e);
     } finally {
         busy = false;
-        requestAnimationFrame(() => document.body.classList.remove('tsets-switching'));
     }
     return true;
 }
 
-// 테마가 바뀌면 글자 크기·여백이 달라져 채팅 길이가 변하고, 처음에 맞춰 둔 "맨 아래" 위치가 어긋남.
-// 채팅을 열면서 세트가 바뀐 경우에만 다시 맨 아래로 내려 줌. 그 사이 사용자가 직접 스크롤하면 그만둠.
-function settleAtBottom() {
-    const chat = document.getElementById('chat');
-    if (!chat) return;
-    let cancelled = false;
-    const cancel = () => { cancelled = true; };
-    const events = ['wheel', 'touchstart', 'keydown', 'mousedown'];
-    events.forEach((ev) => chat.addEventListener(ev, cancel, { passive: true, once: true }));
-    const go = () => { if (!cancelled) chat.scrollTop = chat.scrollHeight; };
-    go();
-    [150, 500, 1100, 2000].forEach((ms) => setTimeout(go, ms));
-    setTimeout(() => events.forEach((ev) => chat.removeEventListener(ev, cancel)), 2100);
+// 채팅이 바뀐 뒤 확인하는 길 (안전망). 미리 적용이 됐다면 여기서는 할 일이 없음.
+async function applyCurrent() {
+    if (!settings().enabled) return false;
+    return applySet(setFor(currentTarget()), { rerender: true });
+}
+
+/* ---------- 미리 적용: 캐릭터를 누르는 순간 ----------
+   채팅이 그려지기 "전에" 테마와 정규식을 바꿔 두면, 채팅을 두 번 그리지 않아도 되고
+   스크롤 위치도 처음부터 맞음. 목록에서 캐릭터·그룹·최근 채팅을 누를 때 동작. */
+
+let revertTimer = null;
+
+function targetFromClick(el) {
+    const c = ctx();
+    const recent = el.closest('.recentChat');
+    if (recent) {
+        if (el.closest('button, .menu_button')) return null;   // 고정·이름 변경·삭제 버튼
+        const group = recent.getAttribute('data-group');
+        const avatar = recent.getAttribute('data-avatar');
+        if (group) return { type: 'group', key: String(group) };
+        if (avatar) return { type: 'char', key: avatar };
+        return null;
+    }
+    const group = el.closest('.group_select');
+    if (group) {
+        const id = group.getAttribute('data-chid') || group.getAttribute('data-grid');
+        return id ? { type: 'group', key: String(id) } : null;
+    }
+    const char = el.closest('.character_select');
+    if (char) {
+        const ch = c.characters?.[Number(char.getAttribute('data-chid'))];
+        return ch ? { type: 'char', key: ch.avatar } : null;
+    }
+    return null;
+}
+
+function onListClick(e) {
+    if (!settings().enabled || !(e.target instanceof Element)) return;
+    const target = targetFromClick(e.target);
+    if (!target) return;
+    const set = setFor(target);
+    if (!set) return;
+    applySet(set, { rerender: false });
+    // 눌렀는데 채팅이 안 열린 경우(취소 등)에는 지금 채팅에 맞는 세트로 되돌림
+    clearTimeout(revertTimer);
+    revertTimer = setTimeout(() => {
+        const now = currentTarget();
+        if (!now || now.type !== target.type || now.key !== target.key) applyCurrent();
+    }, 5000);
 }
 
 /* ---------- 설정 화면 ---------- */
@@ -321,9 +353,11 @@ jQuery(async () => {
     settings();
     mountSettings();
 
-    const onChat = async () => { if (await applyCurrent()) settleAtBottom(); render(); };
+    const onChat = async () => { clearTimeout(revertTimer); await applyCurrent(); render(); };
     c.eventSource.on(c.eventTypes.CHAT_CHANGED, onChat);
     c.eventSource.on(c.eventTypes.APP_READY, onChat);
+    // 캡처 단계에서 먼저 받아야 SillyTavern이 채팅을 그리기 전에 적용됨
+    document.addEventListener('click', onListClick, true);
 
     // 캐릭터 이름을 바꾸면 아바타 파일명도 바뀌므로 지정해 둔 세트를 옮겨 줌
     c.eventSource.on(c.eventTypes.CHARACTER_RENAMED, (oldAvatar, newAvatar) => {
