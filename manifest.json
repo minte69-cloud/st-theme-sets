@@ -1,0 +1,11 @@
+{
+    "display_name": "Theme Sets (캐릭터별 테마·상태창)",
+    "loading_order": 900,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "minte69-cloud",
+    "version": "1.0.0",
+    "homePage": "https://github.com/minte69-cloud/st-theme-sets"
+}
