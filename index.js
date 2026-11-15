@@ -66,7 +66,9 @@ function applyTheme(name) {
     }
     if (ctx().powerUserSettings?.theme === name && select.value === name) return false;
     select.value = name;
-    $(select).trigger('change');
+    // 진짜 DOM 이벤트를 보냄. jQuery의 .trigger('change')는 addEventListener로 붙은 리스너를
+    // 건너뛰어서, 테마를 나중에 불러오는(lazy) 확장과 같이 쓰면 이름만 바뀌고 CSS가 안 바뀜.
+    select.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
 }
 
@@ -90,6 +92,7 @@ function applyRegex(set) {
 }
 
 let busy = false;
+let editingId = '';   // 설정 화면에서 지금 펼쳐 보는 세트
 
 async function applyCurrent({ rerender = true } = {}) {
     const s = settings();
@@ -109,13 +112,15 @@ async function applyCurrent({ rerender = true } = {}) {
     document.body.classList.add('tsets-switching');
     try {
         await new Promise((r) => setTimeout(r, 150));
-        applyTheme(set.theme);
+        const themeChanged = applyTheme(set.theme);
         const regexChanged = applyRegex(set);
         if (regexChanged) {
             save();
             // 이미 그려진 메시지에 새 정규식이 먹도록 채팅을 다시 그림
             if (rerender && ctx().getCurrentChatId?.()) await ctx().reloadCurrentChat();
         }
+        // 테마를 비동기로 불러오는 환경에서도 바뀐 뒤에 화면을 보여 주도록 잠깐 기다림
+        if (themeChanged) await new Promise((r) => setTimeout(r, 450));
         console.debug(LOG, '적용:', set.name);
     } catch (e) {
         console.error(LOG, e);
@@ -161,7 +166,15 @@ function render() {
            </div>`
         : '<div class="tsets-now tsets-hint">채팅을 열면 여기서 그 캐릭터에 쓸 세트를 고를 수 있어.</div>';
 
-    const setsHtml = s.sets.map((set) => {
+    if (!s.sets.some((x) => x.id === editingId)) {
+        editingId = (mapped && s.sets.some((x) => x.id === mapped)) ? mapped : (s.sets[0]?.id || '');
+    }
+    const pickerHtml = s.sets.length
+        ? `<div class="tsets-row"><label>편집할 세트</label><select id="tsets_pick">${s.sets
+            .map((x) => `<option value="${esc(x.id)}" ${x.id === editingId ? 'selected' : ''}>${esc(x.name || '(이름 없음)')}</option>`).join('')}</select></div>`
+        : '';
+
+    const setsHtml = s.sets.filter((x) => x.id === editingId).map((set) => {
         const users = usedBy(set.id);
         const themeOpts = '<option value="">테마 안 바꿈</option>' + themes
             .map((t) => `<option value="${esc(t)}" ${t === set.theme ? 'selected' : ''}>${esc(t)}</option>`).join('')
@@ -187,7 +200,8 @@ function render() {
         <div class="tsets-row"><label>기본 세트</label><select id="tsets_default">${setOptions(s.defaultSetId, '없음 (그대로 두기)')}</select></div>
         <div class="tsets-hint">세트를 지정 안 한 캐릭터나 첫 화면에서 쓰는 세트야.</div>
         <hr>
-        <div class="tsets-row"><b>세트 목록</b><div class="menu_button menu_button_icon" id="tsets_add"><i class="fa-solid fa-plus"></i><span>세트 추가</span></div></div>
+        <div class="tsets-row"><b>세트 편집</b><div class="menu_button menu_button_icon" id="tsets_add"><i class="fa-solid fa-plus"></i><span>세트 추가</span></div></div>
+        ${pickerHtml}
         <div class="tsets-hint">어느 세트에든 체크된 정규식만 이 확장이 켜고 꺼. 어디에도 체크 안 한 정규식은 건드리지 않아.</div>
         ${setsHtml || '<div class="tsets-hint">세트가 아직 없어. "세트 추가"를 눌러줘.</div>'}`;
 }
@@ -202,6 +216,11 @@ function bind() {
         const box = el.closest('.tsets-set');
         const set = box ? s.sets.find((x) => x.id === box.dataset.id) : null;
 
+        if (el.id === 'tsets_pick') {
+            editingId = el.value;
+            render();
+            return;
+        }
         if (el.id === 'tsets_enabled') {
             s.enabled = el.checked;
         } else if (el.id === 'tsets_default') {
@@ -231,7 +250,9 @@ function bind() {
     root.addEventListener('click', (e) => {
         const s = settings();
         if (e.target.closest('#tsets_add')) {
-            s.sets.push({ id: uid(), name: `세트 ${s.sets.length + 1}`, theme: ctx().powerUserSettings?.theme || '', regex: [] });
+            const created = { id: uid(), name: `세트 ${s.sets.length + 1}`, theme: ctx().powerUserSettings?.theme || '', regex: [] };
+            s.sets.push(created);
+            editingId = created.id;
         } else if (e.target.closest('.tsets-del')) {
             const id = e.target.closest('.tsets-set')?.dataset.id;
             const set = s.sets.find((x) => x.id === id);
